@@ -1,0 +1,352 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.10.2
+  kernelspec:
+    display_name: Python 3
+    language: python
+    name: python3
+---
+
+```{python}
+import os                               # Operating system
+import math                             # Mathematics
+import numpy as np                      # Arrays
+import pandas as pd                     # Dataframes
+import matplotlib.pyplot as plt         # Graphs
+from matplotlib import cm               # Colours
+import scipy                            # Scientific computing
+```
+
+```{python}
+import random
+from tqdm import tqdm
+```
+
+```{python}
+stocks = [stock.split('.')[0] for stock in sorted(os.listdir('archive'))]
+```
+
+```{python}
+print(stocks)
+```
+
+```{python}
+len(stocks)
+```
+
+```{python}
+ex_stock = pd.read_csv('archive/A2M.csv')
+```
+
+```{python}
+ex_stock.head()
+```
+
+```{python}
+ex_stock.tail()
+```
+
+```{python}
+ex_stock.describe()
+```
+
+```{python}
+ex_stock.info()
+```
+
+```{python}
+dates = pd.date_range('2000-01-01', '2020-03-31')
+data = pd.DataFrame({'Time': dates})
+```
+
+```{python}
+for s in stocks:
+    price = pd.read_csv('archive/' + s + '.csv', usecols=['Date', 'Adj Close']) #read file csv
+    
+    price['Date'] = pd.to_datetime(price['Date']) #Typecast date
+    
+    price.rename(columns={"Date": "Time", "Adj Close": s}, inplace=True) #rename column
+    
+    data = pd.merge(data, price, how='left', on=['Time'], sort=False) #merge table
+```
+
+```{python}
+data.head()
+```
+
+```{python}
+data['Time'].dt.weekday
+```
+
+```{python}
+data = data[data['Time'].dt.weekday < 5]
+```
+
+```{python}
+data.head()
+```
+
+```{python}
+data = data.dropna(axis=0, how='all')
+```
+
+```{python}
+data.head()
+```
+
+```{python}
+r = data[(data['Time'].dt.weekday == 4) & (data['Time'] >= '2019-01-01')]
+```
+
+```{python}
+r.head()
+```
+
+```{python}
+r = r.drop(['Time'], axis=1)
+```
+
+```{python}
+r
+```
+
+```{python}
+r = r.pct_change(fill_method='ffill')
+```
+
+```{python}
+r.head()
+```
+
+```{python}
+p = data.drop(['Time'],axis=1).tail(1).to_numpy()
+```
+
+```{python}
+p
+```
+
+```{python}
+sigma = r.cov().to_numpy()
+```
+
+```{python}
+sigma.shape
+```
+
+```{python}
+mu = r.mean().to_numpy()
+```
+
+```{python}
+mu.shape
+```
+
+### Define Operatoin of GA
+
+```{python}
+def gen_pop(n):
+    pop = []
+    for _ in range(n):
+        x = np.random.randint(100, size=100)
+        x_dna = '' 
+        for i in x:
+            x_dna += '{0:07b}'.format(i)
+        pop.append(x_dna)
+    return pop
+```
+
+```{python}
+def xover(p1, p2):
+    cross_point = np.random.randint(0, len(p1))
+    
+    child1 = p1[:cross_point] + p2[cross_point:]
+    child2 = p2[:cross_point] + p1[cross_point:]
+    
+    return child1, child2
+```
+
+```{python}
+def mutate(child):
+    i = np.random.randint(len(child))
+    j = child[i]
+    
+    if j=='1':
+        mu = child[:i] + '0' + child[i+1:]
+    else:
+        mu = child[:i] + '1' + child[i+1:]
+    return mu
+```
+
+```{python}
+def phenotype(dna):
+    l = [dna[i * 7: i * 7 + 7] for i in range(100)]
+    x = [int(n,2) for n in l]
+    return np.array(x)
+```
+
+```{python}
+def evaluate_1(dna, mu, sigma, k, p):
+    x = phenotype(dna)
+    mean = mu.T.dot(x) 
+    penalty = sum(abs(mu[np.where(p[0]*x > k)]))
+    variance = 0.5 * x.T.dot(sigma).dot(x)
+    
+    return mean - penalty, 1 / variance
+```
+
+```{python}
+def evaluate_2(dna, mu, sigma, k, p):
+    x = phenotype(dna)
+    mean = mu.T.dot(x) 
+    penalty = sum(abs(mu[np.where(p[0]*x > k)]))
+    variance = 0.5 * x.T.dot(sigma).dot(x)
+    
+    return mean, variance, penalty
+```
+
+```{python}
+def is_pareto_efficient_simple(costs):
+    """
+    Find the pareto-efficient points
+    :param costs: An (n_points, n_costs) array
+    :return: A (n_points, ) boolean array, indicating whether each point is Pareto efficient
+    """
+    is_efficient = np.ones(costs.shape[0], dtype = bool)
+    for i, c in enumerate(costs):
+        if is_efficient[i]:
+            is_efficient[is_efficient] = np.any(costs[is_efficient] < c, axis=1)  # Keep any point with a lower cost
+            is_efficient[i] = True  # And keep self
+    return is_efficient
+```
+
+```{python}
+def identify_pareto(scores):
+    # Count number of items
+    population_size = scores.shape[0]
+    # Create a NumPy index for scores on the pareto front (zero indexed)
+    population_ids = np.arange(population_size)
+    # Create a starting list of items on the Pareto front
+    # All items start off as being labelled as on the Parteo front
+    pareto_front = np.ones(population_size, dtype=bool)
+    # Loop through each item. This will then be compared with all other items
+    for i in range(population_size):
+        # Loop through all other items
+        for j in range(population_size):
+            # Check if our 'i' pint is dominated by out 'j' point
+            if all(scores[j] >= scores[i]) and any(scores[j] > scores[i]):
+                # j dominates i. Label 'i' point as not on Pareto front
+                pareto_front[i] = 0
+                # Stop further comparisons with 'i' (no more comparisons needed)
+                break
+    # Return ids of scenarios on pareto front
+    #return population_ids[pareto_front]
+    return pareto_front
+```
+
+```{python}
+myArray = np.array([[1,1,1],[2,2,2],[4,4,4],[3,3,3]])
+```
+
+```{python}
+is_pareto_efficient_simple(myArray)
+```
+
+```{python}
+identify_pareto(myArray)
+```
+
+```{python}
+def sorted_index(C):
+    l = []
+    cost = C
+    index = np.arange(len(cost))
+    while len(cost) > 0:
+        #b = is_pareto_efficient_simple(cost)
+        b = identify_pareto(cost)
+        l += index[b].tolist()
+        index = index[b == 0]
+        cost = cost[b == 0]
+    
+    return l
+```
+
+```{python}
+def fight(parents, evaluates):
+    l = np.array(evaluates)
+    i = is_pareto_efficient_simple(l)
+    
+    return np.array(parents)[i][0].tolist()
+```
+
+### Parameters GA
+
+```{python}
+n_iter = 100
+n_sel = 200
+n_xover = 300
+p_mutate = 0.2
+n_pop = n_sel + n_xover
+k = 3000
+```
+
+```{python}
+#initial Population
+pop_list = gen_pop(n_pop)
+
+for _ in tqdm(range(n_iter)):
+    #Evaluate fitness
+    evaluation_set = [evaluate_1(d, mu, sigma, k, p) for d in pop_list]
+    ranking = sorted_index(np.array(evaluation_set))
+    
+    generation = np.array(pop_list)[ranking].tolist()
+    evaluation_set = np.array(evaluation_set)[ranking].tolist()
+    
+    #Parents selection
+    new_gen = generation[:n_sel]
+    
+    #Cross over
+    for _ in range(n_sel, n_pop, 2):
+        
+        index1,index2,index3,index4 = [random.randint(0, n_sel-1) for _ in range(4)]
+        
+        p1 = [new_gen[index1], new_gen[index2]]
+        p2 = [new_gen[index3], new_gen[index4]]
+        
+        e1 = [evaluation_set[index1], evaluation_set[index2]]
+        e2 = [evaluation_set[index3], evaluation_set[index4]]
+        
+        parent1 = fight(p1, e1)
+        parent2 = fight(p2, e2)
+        
+        offsprint1, offsprint2 = xover(parent1, parent2)
+        
+        #Permutation    
+        if random.uniform(0,1) < p_mutate:
+            offsprint1 = mutate(offsprint1)
+            offsprint2 = mutate(offsprint2)
+            
+        new_gen.extend([offsprint1, offsprint2])
+        
+    #New generation
+    pop_list = new_gen
+```
+
+```{python}
+phenotype(pop_list[0])
+```
+
+```{python}
+for i in range(10):
+    print(evaluate_2(pop_list[i], mu, sigma, k, p))
+    print('-'*50)
+```
+
+```{python}
+
+```
